@@ -526,14 +526,14 @@ void WorldSession::HandleSellItemOpcode(WorldPacket& recv_data)
     // prevent sell not owner item
     if (_player->GetObjectGuid() != pItem->GetOwnerGuid())
     {
-        _player->SendSellError(SellResult::CANT_SELL_ITEM, pCreature, itemGuid);
+        _player->SendSellError(SellResult::YOU_DONT_OWN_THAT_ITEM, pCreature, itemGuid);
         return;
     }
 
     // prevent sell non empty bag by drag-and-drop at vendor's item list
     if (pItem->IsBag() && !((Bag*)pItem)->IsEmpty())
     {
-        _player->SendSellError(SellResult::CANT_SELL_ITEM, pCreature, itemGuid);
+        _player->SendSellError(SellResult::ONLY_EMPTY_BAG, pCreature, itemGuid);
         return;
     }
 
@@ -1400,7 +1400,10 @@ void WorldSession::HandleSocketOpcode(WorldPacket& recv_data)
         {
             itemTarget->SetEnchantment(EnchantmentSlot(SOCK_ENCHANTMENT_SLOT + i), GemEnchants[i], 0, 0, _player->GetObjectGuid());
             if (Item* guidItem = gemGuids[i] ? _player->GetItemByGuid(gemGuids[i]) : nullptr)
-                _player->DestroyItem(guidItem->GetBagSlot(), guidItem->GetSlot(), true);
+            {
+                uint32 count = 1;                           // one gem of the stack
+                _player->DestroyItemCount(*guidItem, count, true);
+            }
         }
     }
 

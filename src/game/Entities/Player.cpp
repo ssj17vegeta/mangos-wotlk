@@ -426,14 +426,19 @@ void TradeData::SetItem(TradeSlots slot, Item* item)
     ObjectGuid itemGuid = item ? item->GetObjectGuid() : ObjectGuid();
 
     if (m_items[slot] == itemGuid)
+    {
+        Update(false);                                      // the client drops the updates of its offer sent before this request
         return;
+    }
 
     m_items[slot] = itemGuid;
 
     SetAccepted(false);
     GetTraderData()->SetAccepted(false);
 
-    Update();
+    ++m_serverStateIndex;
+    Update(true);
+    Update(false);
 
     // need remove possible trader spell applied to changed item
     if (slot == TRADE_SLOT_NONTRADED)
@@ -456,6 +461,7 @@ void TradeData::SetSpell(uint32 spell_id, Item* castItem /*= nullptr*/)
     SetAccepted(false);
     GetTraderData()->SetAccepted(false);
 
+    ++m_serverStateIndex;
     Update(true);                                           // send spell info to item owner
     Update(false);                                          // send spell info to caster self
 }
@@ -463,7 +469,10 @@ void TradeData::SetSpell(uint32 spell_id, Item* castItem /*= nullptr*/)
 void TradeData::SetMoney(uint32 money)
 {
     if (m_money == money)
+    {
+        Update(false);                                      // the client drops the updates of its offer sent before this request
         return;
+    }
 
     if (money > m_player->GetMoney())
     {
@@ -479,7 +488,9 @@ void TradeData::SetMoney(uint32 money)
     SetAccepted(false);
     GetTraderData()->SetAccepted(false);
 
-    Update();
+    ++m_serverStateIndex;
+    Update(true);
+    Update(false);
 }
 
 void TradeData::Update(bool for_trader /*= true*/) const
@@ -592,7 +603,7 @@ Player::Player(WorldSession* session): Unit(), m_taxiTracker(*this), m_mover(thi
     m_deathTimer = 0;
     m_deathExpireTime = 0;
 
-    m_swingErrorMsg = 0;
+    m_swingErrorMsg = SWING_ERROR_NONE;
 
     for (auto& j : m_bgBattleGroundQueueID)
     {
@@ -6887,8 +6898,8 @@ bool Player::SetPosition(float x, float y, float z, float orientation, bool tele
         if (GetGroup() && (old_x != x || old_y != y))
             SetGroupUpdateFlag(GROUP_UPDATE_FLAG_POSITION);
 
-        if (GetTrader() && !IsWithinDistInMap(GetTrader(), INTERACTION_DISTANCE))
-            TradeCancel(true, TRADE_STATUS_TARGET_TO_FAR);
+        if (GetTrader() && !IsWithinDistInMap(GetTrader(), TRADE_DISTANCE, false))
+            TradeCancel(true);
 
         if (m_needsZoneUpdate)
         {
@@ -7517,9 +7528,10 @@ bool Player::RewardHonor(Unit* uVictim, uint32 groupsize, float honor)
 
     // honor - for show honor points in log
     // victim_guid - for show victim name in log
+    // victim_rank 0       HK: <lowest alliance\horde rank>
     // victim_rank [1..4]  HK: <dishonored rank>
     // victim_rank [5..19] HK: <alliance\horde rank>
-    // victim_rank [0,20+] HK: <>
+    // victim_rank -1      honor gain without a rank
     WorldPacket data(SMSG_PVP_CREDIT, 4 + 8 + 4);
     data << uint32(honor);
     data << ObjectGuid(victim_guid);
@@ -16486,6 +16498,8 @@ bool Player::LoadFromDB(ObjectGuid guid, SqlQueryHolder* holder)
 
     _LoadIntoDataField(fields[60].GetString(), PLAYER_EXPLORED_ZONES_1, PLAYER_EXPLORED_ZONES_SIZE);
     _LoadIntoDataField(fields[63].GetString(), PLAYER__FIELD_KNOWN_TITLES, KNOWN_TITLES_SIZE * 2);
+    // lifetime highest PvP rank, from the old PvP rank titles
+    SetByteValue(PLAYER_FIELD_BYTES, PLAYER_FIELD_BYTES_OFFSET_LIFETIME_MAX_PVP_RANK, GetHighestPvPRankIndex());
 
     InitDisplayIds();                                       // model, scale and model data
 
@@ -20194,7 +20208,7 @@ bool Player::ActivateTaxiPathTo(std::vector<uint32> const& nodes, Creature* npc 
     // stop trade (client cancel trade at taxi map open but cheating tools can be used for reopen it)
     TradeCancel(true);
 
-    if (!m_taxiTracker.AddRoutes(nodes, (npc ? GetReputationPriceDiscount(npc) : 0.0f), !spellid))
+    if (!m_taxiTracker.AddRoutes(nodes, (npc ? GetRepairPriceMultiplier(npc) : 0.0f), !spellid))
     {
         GetSession()->SendActivateTaxiReply(ERR_TAXIUNSPECIFIEDSERVERERROR);
         return false;
@@ -20807,7 +20821,7 @@ bool Player::BuyItemFromVendorSlot(ObjectGuid vendorGuid, uint32 vendorslot, uin
     data << pCreature->GetObjectGuid();
     data << uint32(vendorslot + 1);                 // numbered from 1 at client
     data << uint32(crItem->maxcount > 0 ? new_count : 0xFFFFFFFF);
-    data << uint32(count);
+    data << uint32(totalCount);
     GetSession()->SendPacket(data);
 
     SendNewItem(pItem, totalCount, true, false);
@@ -23153,6 +23167,8 @@ void Player::SetTitle(CharTitlesEntry const* title, bool lost, bool send)
 
         SetFlag(PLAYER__FIELD_KNOWN_TITLES + fieldIndexOffset, flag);
     }
+
+    SetByteValue(PLAYER_FIELD_BYTES, PLAYER_FIELD_BYTES_OFFSET_LIFETIME_MAX_PVP_RANK, GetHighestPvPRankIndex());
 
     if (!send)
         return;

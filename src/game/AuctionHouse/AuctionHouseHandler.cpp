@@ -73,7 +73,7 @@ void WorldSession::SendAuctionCommandResult(AuctionEntry* auc, AuctionAction Act
     {
         case AUCTION_OK:
             if (Action == AUCTION_BID_PLACED)
-                data << uint32(auc->GetAuctionOutBid());    // new AuctionOutBid?
+                data << uint32(0);                          // minimal outbid: none with a bid result, the next search lists it
             break;
         case AUCTION_ERR_INVENTORY:
             data << uint32(invError);
@@ -100,7 +100,7 @@ void WorldSession::SendAuctionBidderNotification(AuctionEntry* auction) const
 
     // if 0, client shows ERR_AUCTION_WON_S, else ERR_AUCTION_OUTBID_S
     data << uint32(auction->moneyDeliveryTime ? 0 : auction->bid);
-    data << uint32(auction->GetAuctionOutBid());            // AuctionOutBid?
+    data << uint32(auction->moneyDeliveryTime ? 0 : auction->GetAuctionOutBid()); // AuctionOutBid?
     data << uint32(auction->itemTemplate);
     data << int32(auction->itemRandomPropertyId);
 
@@ -113,7 +113,7 @@ void WorldSession::SendAuctionOwnerNotification(AuctionEntry* auction) const
     WorldPacket data(SMSG_AUCTION_OWNER_NOTIFICATION, (7 * 4));
     data << uint32(auction->Id);
     data << uint32(auction->bid);                           // if 0, client shows ERR_AUCTION_EXPIRED_S, else ERR_AUCTION_SOLD_S (works only when guid==0)
-    data << uint32(auction->GetAuctionOutBid());            // AuctionOutBid?
+    data << uint32(auction->moneyDeliveryTime ? 0 : auction->GetAuctionOutBid()); // AuctionOutBid?
 
     ObjectGuid bidder_guid = ObjectGuid();
     if (!auction->moneyDeliveryTime)                        // not sold yet
@@ -143,10 +143,10 @@ void WorldSession::SendAuctionRemovedNotification(AuctionEntry* auction) const
     SendPacket(data);
 }
 
-// this function sends mail to old bidder
-void WorldSession::SendAuctionOutbiddedMail(AuctionEntry* auction)
+// this function sends mail to old bidder, with his bid; the auction already holds the new bid
+void WorldSession::SendAuctionOutbiddedMail(AuctionEntry* auction, uint32 oldBidderLowGuid, uint32 oldBid)
 {
-    ObjectGuid oldBidder_guid = ObjectGuid(HIGHGUID_PLAYER, auction->bidder);
+    ObjectGuid oldBidder_guid = ObjectGuid(HIGHGUID_PLAYER, oldBidderLowGuid);
     Player* oldBidder = sObjectMgr.GetPlayer(oldBidder_guid);
 
     uint32 oldBidder_accId = 0;
@@ -163,7 +163,7 @@ void WorldSession::SendAuctionOutbiddedMail(AuctionEntry* auction)
             oldBidder->GetSession()->SendAuctionBidderNotification(auction);
 
         MailDraft(msgAuctionOutbiddedSubject.str(), "")     // TODO: fix body
-        .SetMoney(auction->bid)
+        .SetMoney(oldBid)
         .SendMailTo(MailReceiver(oldBidder, oldBidder_guid), auction, MAIL_CHECK_MASK_COPIED);
     }
 }
@@ -392,6 +392,13 @@ void WorldSession::HandleAuctionPlaceBid(WorldPacket& recv_data)
     AuctionEntry* auction = auctionHouse->GetAuction(auctionId);
     Player* pl = GetPlayer();
 
+    // a sold auction only waits for the delivery of its money
+    if (auction && auction->moneyDeliveryTime)
+    {
+        SendAuctionCommandResult(nullptr, AUCTION_BID_PLACED, AUCTION_ERR_ITEM_NOT_FOUND);
+        return;
+    }
+
     if (!auction || auction->owner == pl->GetGUIDLow())
     {
         // you cannot bid your own auction:
@@ -438,12 +445,13 @@ void WorldSession::HandleAuctionPlaceBid(WorldPacket& recv_data)
     if (price < auction->startbid)
         return;
 
-    SendAuctionCommandResult(auction, AUCTION_BID_PLACED, AUCTION_OK);
-
     if (auction->UpdateBid(price, pl))
         pl->GetAchievementMgr().UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_HIGHEST_AUCTION_BID, price);
     else
         pl->GetAchievementMgr().UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_HIGHEST_AUCTION_BID, auction->buyout);
+
+    // sent after the bid, as a buyout first tells the bidder that he won
+    SendAuctionCommandResult(auction, AUCTION_BID_PLACED, AUCTION_OK);
 }
 
 // this void is called when auction_owner cancels his auction
